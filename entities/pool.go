@@ -2,6 +2,7 @@ package entities
 
 import (
 	"errors"
+	"fmt"
 	"math/big"
 
 	"github.com/KyberNetwork/int256"
@@ -39,6 +40,8 @@ type Pool struct {
 	Liquidity        *utils.Uint128
 	TickCurrent      int
 	TickDataProvider TickDataProvider
+
+	KnownVarsOps	[]string
 
 	token0Price *entities.Price
 	token1Price *entities.Price
@@ -282,6 +285,25 @@ func (p *Pool) GetInputAmount(outputAmount *entities.CurrencyAmount, sqrtPriceLi
 	return entities.FromRawAmount(inputToken, swapResult.amountCalculated.ToBig()), pool, nil
 }
 
+func (p *Pool) logStore(name string, v interface{}, pc int) {
+
+	s := ""
+
+	switch vv := v.(type) {
+	case bool:
+		if vv {
+			s = "1"
+		} else {
+			s = "0"
+		}
+	case *utils.Int256:
+		s = vv.ToBig().String()
+	default:
+		s = fmt.Sprintf("%v", v)
+	}
+	p.KnownVarsOps = append(p.KnownVarsOps, fmt.Sprintf("%6d :  MSTORE %50s %s", pc, name, s))
+}
+
 /**
  * Executes a swap
  * @param zeroForOne Whether the amount in is token0 or token1
@@ -336,6 +358,12 @@ func (p *Pool) swap(zeroForOne bool, amountSpecified *utils.Int256, sqrtPriceLim
 		liquidity:                new(utils.Uint128).Set(p.Liquidity),
 	}
 
+	p.logStore("SwapState.amountSpecifiedRemaining", state.amountSpecifiedRemaining, 2891)
+	p.logStore("SwapState.amountCalculated", state.amountCalculated, 2898)
+	p.logStore("SwapState.sqrtPriceX96", state.sqrtPriceX96, 2917)
+	p.logStore("SwapState.tick", state.tick, 2930)
+	p.logStore("SwapState.liquidity", state.liquidity, 2987)
+
 	// crossInitTickLoops is the number of loops that cross an initialized tick.
 	// We only count when tick passes an initialized tick, since gas only significant in this case.
 	crossInitTickLoops := 0
@@ -344,22 +372,28 @@ func (p *Pool) swap(zeroForOne bool, amountSpecified *utils.Int256, sqrtPriceLim
 	for !state.amountSpecifiedRemaining.IsZero() && state.sqrtPriceX96.Cmp(sqrtPriceLimitX96) != 0 {
 		var step StepComputations
 		step.sqrtPriceStartX96.Set(state.sqrtPriceX96)
+		p.logStore("StepComputations.sqrtPriceStartX96", state.sqrtPriceX96, 3058)
 
 		// because each iteration of the while loop rounds, we can't optimize this code (relative to the smart contract)
 		// by simply traversing to the next available tick, we instead need to exactly replicate
 		// tickBitmap.nextInitializedTickWithinOneWord
 		step.tickNext, step.initialized, err = p.TickDataProvider.NextInitializedTickIndex(state.tick, zeroForOne)
+		p.logStore("StepComputations.initialized", step.initialized, 3116)
+		p.logStore("StepComputations.tickNext", step.tickNext, 3130)
 		if err != nil {
 			return nil, err
 		}
 
 		if step.tickNext < utils.MinTick {
 			step.tickNext = utils.MinTick
+			p.logStore("StepComputations.tickNext", step.tickNext, 0)
 		} else if step.tickNext > utils.MaxTick {
 			step.tickNext = utils.MaxTick
+			p.logStore("StepComputations.tickNext", step.tickNext, 0)
 		}
 
 		err = utils.GetSqrtRatioAtTickV2(step.tickNext, &step.sqrtPriceNextX96)
+		p.logStore("StepComputations.sqrtPriceNextX96", &step.sqrtPriceNextX96, 3216)
 		if err != nil {
 			return nil, err
 		}
@@ -384,7 +418,13 @@ func (p *Pool) swap(zeroForOne bool, amountSpecified *utils.Int256, sqrtPriceLim
 		if err != nil {
 			return nil, err
 		}
+		
+		p.logStore("StepComputations.feeAmount", &step.feeAmount, 3352)
+		p.logStore("StepComputations.amountOut", &step.amountOut, 3357)
+		p.logStore("StepComputations.amountIn", &step.amountIn, 3362)
+		
 		state.sqrtPriceX96.Set(&nxtSqrtPriceX96)
+		p.logStore("SwapState.sqrtPriceX96", &nxtSqrtPriceX96, 3376)
 
 		var amountInPlusFee utils.Uint256
 		amountInPlusFee.Add(&step.amountIn, &step.feeAmount)
@@ -408,6 +448,8 @@ func (p *Pool) swap(zeroForOne bool, amountSpecified *utils.Int256, sqrtPriceLim
 			state.amountSpecifiedRemaining.Add(state.amountSpecifiedRemaining, &amountOutSigned)
 			state.amountCalculated.Add(state.amountCalculated, &amountInPlusFeeSigned)
 		}
+		p.logStore("SwapState.amountSpecifiedRemaining", state.amountSpecifiedRemaining, 3406)
+		p.logStore("SwapState.amountCalculated", state.amountCalculated, 3440)
 
 		// TODO
 		if state.sqrtPriceX96.Cmp(&step.sqrtPriceNextX96) == 0 {
@@ -425,6 +467,7 @@ func (p *Pool) swap(zeroForOne bool, amountSpecified *utils.Int256, sqrtPriceLim
 					liquidityNet = new(utils.Int128).Neg(liquidityNet)
 				}
 				utils.AddDeltaInPlace(state.liquidity, liquidityNet)
+				p.logStore("SwapState.liquidity", state.liquidity, 3891)
 
 				crossInitTickLoops++
 			}
@@ -433,10 +476,12 @@ func (p *Pool) swap(zeroForOne bool, amountSpecified *utils.Int256, sqrtPriceLim
 			} else {
 				state.tick = step.tickNext
 			}
+			p.logStore("SwapState.tick", state.tick, 3929)
 
 		} else if state.sqrtPriceX96.Cmp(&step.sqrtPriceStartX96) != 0 {
 			// recompute unless we're on a lower tick boundary (i.e. already transitioned ticks), and haven't moved
 			state.tick, err = utils.GetTickAtSqrtRatioV2(state.sqrtPriceX96)
+			p.logStore("SwapState.tick", state.tick, 3992)
 			if err != nil {
 				return nil, err
 			}

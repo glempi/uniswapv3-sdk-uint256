@@ -2,8 +2,6 @@ package entities
 
 import (
 	"errors"
-	"math"
-
 	"github.com/KyberNetwork/int256"
 )
 
@@ -142,11 +140,21 @@ func NextInitializedTick(ticks []Tick, tick int, lte bool) (Tick, error) {
 }
 
 func NextInitializedTickWithinOneWord(ticks []Tick, tick int, lte bool, tickSpacing int) (int, bool, error) {
-	compressed := math.Floor(float64(tick) / float64(tickSpacing)) // matches rounding in the code
+	compressed := tick / tickSpacing
+	if (tick < 0 && tick % tickSpacing != 0) {
+		compressed--; // round towards negative infinity
+	}
+
+    position := func(tick int) int {
+        return tick % 256
+    }
 
 	if lte {
-		wordPos := int(compressed) >> 8
-		minimum := (wordPos << 8) * tickSpacing
+		bitPos := position(compressed)
+
+		minimum := (compressed - bitPos) * tickSpacing
+		// minimum := (wordPos << 8) * tickSpacing
+
 		isBelowSmallest, err := IsBelowSmallest(ticks, tick)
 		if err != nil {
 			return ZeroValueTickIndex, ZeroValueTickInitialized, err
@@ -162,11 +170,14 @@ func NextInitializedTickWithinOneWord(ticks []Tick, tick int, lte bool, tickSpac
 		}
 
 		index := nextInitializedTick.Index
-		nextInitializedTickIndex := math.Max(float64(minimum), float64(index))
-		return int(nextInitializedTickIndex), int(nextInitializedTickIndex) == index, nil
+		nextInitializedTickIndex := max(minimum, index)
+		return nextInitializedTickIndex, nextInitializedTickIndex == index, nil
 	} else {
-		wordPos := int(compressed+1) >> 8
-		maximum := ((wordPos+1)<<8)*tickSpacing - 1
+		bitPos := position(compressed+1)
+
+		// maximum := ((wordPos+1)<<8)*tickSpacing - 1 //old way result not like uni3
+		maximum := (compressed+1 + (255 - bitPos))*tickSpacing //to calc like uni3
+
 		isAtOrAboveLargest, err := IsAtOrAboveLargest(ticks, tick)
 		if err != nil {
 			return ZeroValueTickIndex, ZeroValueTickInitialized, err
@@ -182,8 +193,8 @@ func NextInitializedTickWithinOneWord(ticks []Tick, tick int, lte bool, tickSpac
 		}
 
 		index := nextInitializedTick.Index
-		nextInitializedTickIndex := math.Min(float64(maximum), float64(index))
-		return int(nextInitializedTickIndex), int(nextInitializedTickIndex) == index, nil
+		nextInitializedTickIndex := min(maximum, index)
+		return nextInitializedTickIndex, nextInitializedTickIndex == index, nil
 	}
 }
 

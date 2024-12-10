@@ -146,7 +146,7 @@ func NextInitializedTickWithinOneWord(ticks []Tick, tick int, lte bool, tickSpac
 	}
 
     position := func(tick int) int {
-        return tick % 256
+        return int(uint8(tick) % 0xff)
     }
 
 	if lte {
